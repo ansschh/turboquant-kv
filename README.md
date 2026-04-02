@@ -54,15 +54,28 @@ H100, 10M vectors, d=128.
 
 The optimized Triton kernel matches cuBLAS FlatIP while reading 8x less data from HBM.
 
-### KV Cache Quality
+### KV Cache on Llama-3.2-1B-Instruct
 
-Logit cosine similarity against full-precision baseline. TinyLlama-1.1B, 256 tokens.
+Memory vs quality at 1024 tokens. 15x compression with 99.6% cosine similarity.
 
 <p align="center">
-  <img src="results/kv_quality.png" width="55%">
+  <img src="results/llama_memory_vs_quality.png" width="75%">
 </p>
 
-All configurations maintain >99.4% cosine similarity. Top-1 token agreement is 100% across all bit widths.
+Quality across context lengths. K4/V4 and K4/V3 maintain 100% top-1 token agreement up to 1024 tokens.
+
+<p align="center">
+  <img src="results/llama_quality.png" width="75%">
+</p>
+
+| Config | 128 tok | 256 tok | 512 tok | 1024 tok | Top-1 Match |
+|--------|---------|---------|---------|----------|-------------|
+| K4/V4 | 99.92% | 99.64% | 99.05% | 99.61% | 4/4 |
+| K4/V3 | 99.86% | 99.76% | 97.97% | 99.41% | 4/4 |
+| K4/V2 | 99.64% | 99.33% | 96.26% | 98.13% | 4/4 |
+| K3/V3 | 98.91% | 98.99% | 97.41% | 95.76% | 4/4 |
+| K3/V2 | 99.42% | 98.92% | 92.19% | 97.22% | 3/4 |
+| K2/V2 | 93.58% | 75.92% | 80.30% | 87.35% | 2/4 |
 
 ## Installation
 
