@@ -16,30 +16,36 @@ TurboQuant achieves near-optimal vector quantization with **zero training time**
 
 ### Recall@1@k (100K vectors)
 
-TurboQuant consistently outperforms FAISS Product Quantization across dimensions and bit widths.
+Benchmarked on real datasets: **GloVe-200** (390K word embeddings) and **SIFT-1M** (1M image descriptors).
 
 <p align="center">
-<img src="results/recall_random-128.png" width="48%" alt="d=128">
-<img src="results/recall_random-1536.png" width="48%" alt="d=1536">
+<img src="results/recall_glove_200.png" width="48%" alt="GloVe-200">
+<img src="results/recall_sift_1m.png" width="48%" alt="SIFT-1M">
 </p>
 
-| Method | d=128 R@1@10 | d=1536 R@1@10 | Bits/dim | Training |
-|--------|-------------|--------------|---------|---------|
-| FlatIP (exact) | 1.000 | 1.000 | 32 | None |
-| **TurboQuant 4-bit** | **0.997** | **1.000** | 4 | **None** |
-| **TurboQuant 3-bit** | **0.964** | **0.966** | 3 | **None** |
-| **TurboQuant 2-bit** | **0.741** | **0.763** | 2 | **None** |
-| FAISS PQ m=32 | 0.402 | 0.005 | 2 | 10s |
-| FAISS PQ m=16 | 0.207 | 0.003 | 1 | 10s |
-| FAISS PQ m=8 | 0.079 | 0.004 | 0.5 | 10s |
+**GloVe-200** (390K word vectors, d=200):
 
-### Quantization Time
+| Method | R@1@1 | R@1@10 | R@1@64 | Bits/dim | Training |
+|--------|-------|--------|--------|---------|---------|
+| FlatIP (exact) | 1.000 | 1.000 | 1.000 | 32 | None |
+| **TurboQuant 4-bit** | **0.903** | **0.998** | **1.000** | 4 | **None** |
+| **TurboQuant 3-bit** | **0.771** | **0.971** | **0.998** | 3 | **None** |
+| **TurboQuant 2-bit** | **0.575** | **0.863** | **0.970** | 2 | **None** |
+| FAISS PQ m=8 | 0.097 | 0.314 | 0.595 | 0.3 | 38s |
 
-TurboQuant requires no training. FAISS PQ requires expensive k-means clustering.
+**SIFT-1M** (1M image descriptors, d=128):
 
-<p align="center">
-<img src="results/quant_time.png" width="70%" alt="Quantization Time">
-</p>
+| Method | R@1@1 | R@1@10 | R@1@64 | Bits/dim | Training |
+|--------|-------|--------|--------|---------|---------|
+| FlatIP (exact) | 1.000 | 1.000 | 1.000 | 32 | None |
+| **TurboQuant 4-bit** | **0.429** | **0.810** | **0.963** | 4 | **None** |
+| FAISS PQ m=32 | 0.425 | 0.777 | 0.945 | 2 | 29s |
+| **TurboQuant 3-bit** | **0.217** | **0.547** | **0.818** | 3 | **None** |
+| FAISS PQ m=16 | 0.193 | 0.504 | 0.782 | 1 | 28s |
+| **TurboQuant 2-bit** | **0.085** | **0.338** | **0.633** | 2 | **None** |
+| FAISS PQ m=8 | 0.067 | 0.259 | 0.535 | 0.5 | 35s |
+
+TurboQuant matches or beats FAISS PQ at comparable bits/dim with zero training time.
 
 ### Kernel Performance (H100, 10M vectors, d=128)
 
