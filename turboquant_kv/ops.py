@@ -109,6 +109,25 @@ def rotate_and_quantize(
 # -------------------------------------------------------------------
 
 
+def _has_triton() -> bool:
+    """Check if Triton is available."""
+    try:
+        import triton
+        return True
+    except ImportError:
+        return False
+
+
+_TRITON_AVAILABLE = None
+
+
+def _check_triton():
+    global _TRITON_AVAILABLE
+    if _TRITON_AVAILABLE is None:
+        _TRITON_AVAILABLE = _has_triton()
+    return _TRITON_AVAILABLE
+
+
 def attention_scores_packed(
     query: torch.Tensor,
     packed_keys: torch.Tensor,
@@ -130,6 +149,27 @@ def attention_scores_packed(
     Returns:
         scores: (batch, heads, seq_len) float32.
     """
+    # Try optimized Triton v2 first (cuBLAS-parity, 4-bit only)
+    if query.is_cuda and _check_triton() and bit_width == 4:
+        try:
+            from .triton_kernels import triton_attention_scores_v2
+            return triton_attention_scores_v2(
+                query, packed_keys, key_norms, centroids, rotation, bit_width
+            )
+        except Exception:
+            pass
+
+    # Try general Triton kernel
+    if query.is_cuda and _check_triton():
+        try:
+            from .triton_kernels import triton_attention_scores
+            return triton_attention_scores(
+                query, packed_keys, key_norms, centroids, rotation, bit_width
+            )
+        except Exception:
+            pass
+
+    # Try compiled C++ ops
     if _check_ops():
         try:
             return torch.ops.turboquant.attention_scores_packed(
