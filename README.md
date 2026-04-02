@@ -190,14 +190,13 @@ python benchmarks/micro/bench_triton_v2.py
 - [x] Paper-exact Python reference (MSE + Prod)
 - [x] QuantizedKVCache with packed storage
 - [x] TurboQuantIndex for vector search
-- [x] CUDA kernels (correct, not yet optimized)
-- [x] Triton kernel matching cuBLAS throughput
-- [x] Standard benchmarks (d=128, 200, 1536)
-- [ ] vLLM plugin (attention backend + paged cache)
-- [ ] HuggingFace Transformers integration
-- [ ] 2-bit and 3-bit Triton kernels
-- [ ] Multi-GPU support
-- [ ] Entropy-coded storage (5% size reduction)
+- [x] CUDA kernels (correct, compiled on H100)
+- [x] Triton kernels matching cuBLAS throughput (2, 3, 4-bit)
+- [x] Real-world benchmarks (GloVe-200, SIFT-1M)
+- [x] vLLM plugin (TurboQuantAttentionBackend + paged cache)
+- [x] HuggingFace Transformers integration (TurboQuantCache)
+- [x] Multi-GPU support (tensor-parallel head sharding)
+- [x] Entropy-coded storage (5.9% savings at 4-bit)
 
 ## Citation
 
