@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel", "torch>=2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turboquant-kv"
+version = "0.1.0"
+description = "TurboQuant: quantized KV cache compression and vector search (arXiv:2504.19874)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+authors = [
+    {name = "TurboQuant Contributors"},
+]
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+    "scipy",
+]
+
+[project.optional-dependencies]
+transformers = ["transformers>=4.30"]
+vllm = ["vllm>=0.3"]
+dev = ["pytest>=7.0", "pytest-benchmark"]
+
+[tool.setuptools.packages.find]
+include = ["turboquant_kv*"]
