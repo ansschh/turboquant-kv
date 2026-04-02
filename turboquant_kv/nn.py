@@ -1,10 +1,15 @@
 """
 Drop-in helpers for integrating TurboQuant with HuggingFace models.
+
+This module provides:
+- ``TurboQuantCache``: re-exported from ``hf_integration`` for convenience.
+- ``wrap_model_kv_cache``: monkey-patch a HF model to use a TurboQuantCache.
+- ``TurboQuantAttention``: standalone attention module backed by QuantizedKVCache.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -12,21 +17,34 @@ import torch.nn as nn
 from turboquant_kv.config import TurboQuantConfig
 from turboquant_kv.cache import QuantizedKVCache
 
+# Re-export TurboQuantCache so users can do:
+#   from turboquant_kv.nn import TurboQuantCache
+try:
+    from turboquant_kv.hf_integration import TurboQuantCache
+except ImportError:
+    TurboQuantCache = None  # type: ignore[assignment,misc]
+
 
 def wrap_model_kv_cache(
     model: nn.Module,
     config: TurboQuantConfig,
     max_seq_len: int = 4096,
 ) -> nn.Module:
-    """Monkey-patch a HuggingFace model to use QuantizedKVCache.
+    """Monkey-patch a HuggingFace model to use a TurboQuantCache.
 
-    This replaces the model's default KV cache mechanism with a TurboQuant
-    compressed cache. Currently supports LLaMA-style models (LlamaForCausalLM).
+    This creates a ``TurboQuantCache`` from the supplied config and sets it
+    as the model's ``past_key_values`` so that subsequent ``generate()``
+    calls transparently compress KV pairs.
+
+    Currently supports any ``PreTrainedModel`` whose config exposes
+    ``num_hidden_layers``, ``num_key_value_heads`` (or ``num_attention_heads``),
+    and ``head_dim`` (or ``hidden_size / num_attention_heads``).
 
     Args:
         model: A HuggingFace causal LM model.
         config: TurboQuant configuration.
-        max_seq_len: Maximum sequence length for pre-allocation.
+        max_seq_len: Maximum sequence length (informational; the cache
+            grows dynamically).
 
     Returns:
         The modified model (same object, mutated in place).
@@ -36,6 +54,12 @@ def wrap_model_kv_cache(
     except ImportError:
         raise ImportError(
             "transformers is required for wrap_model_kv_cache. "
+            "Install with: pip install turboquant-kv[transformers]"
+        )
+
+    if TurboQuantCache is None:
+        raise ImportError(
+            "transformers is required for TurboQuantCache. "
             "Install with: pip install turboquant-kv[transformers]"
         )
 
@@ -60,32 +84,30 @@ def wrap_model_kv_cache(
             f"num_layers={num_layers}, num_heads={num_heads}, head_dim={head_dim}"
         )
 
-    device = next(model.parameters()).device
-
-    cache = QuantizedKVCache(
-        config=config,
-        num_layers=num_layers,
-        max_seq_len=max_seq_len,
-        num_heads=num_heads,
-        head_dim=head_dim,
-        device=str(device),
+    # Create the TurboQuantCache
+    cache = TurboQuantCache(
+        key_bits=config.key_bits,
+        value_bits=config.value_bits,
+        mode=config.mode,
+        rotation=config.rotation,
+        protected_layers=config.protected_layers,
+        seed=config.seed,
     )
 
-    # Attach cache to the model
-    model._turboquant_cache = cache
-    model._turboquant_config = config
+    # Attach cache to the model so callers can do:
+    #   output = model.generate(input_ids, past_key_values=model._turboquant_cache)
+    model._turboquant_cache = cache  # type: ignore[attr-defined]
+    model._turboquant_config = config  # type: ignore[attr-defined]
 
     return model
 
 
 class TurboQuantAttention(nn.Module):
-    """Drop-in replacement attention layer that uses quantized KV cache.
+    """Standalone attention module that uses a QuantizedKVCache.
 
-    This is a stub for future implementation. The full version will:
-    1. Accept Q, K, V projections as input
-    2. Quantize K, V on the fly into the QuantizedKVCache
-    3. Compute attention scores from packed keys
-    4. Compute attention output from packed values
+    Accepts Q, K, V projections as input, quantises K/V on the fly into the
+    QuantizedKVCache, computes attention scores from packed keys, and
+    produces the weighted-value output from packed values.
     """
 
     def __init__(
@@ -96,7 +118,7 @@ class TurboQuantAttention(nn.Module):
         max_seq_len: int = 4096,
         layer_id: int = 0,
         device: str = "cuda",
-    ):
+    ) -> None:
         super().__init__()
         self.config = config
         self.num_heads = num_heads

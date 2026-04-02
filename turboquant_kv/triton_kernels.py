@@ -310,6 +310,91 @@ def _tq_scores_v2_kernel(
     tl.store(scores_ptr + offs, acc, mask=mask)
 
 
+@triton.jit
+def _tq_scores_2bit_kernel(
+    packed_ptr, norms_ptr, table_ptr, scores_ptr,
+    seq_len, head_dim,
+    bytes_per_plane: tl.constexpr,
+    packed_dim: tl.constexpr,
+    n_levels: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    """Specialized 2-bit kernel using precomputed q_rot*centroid lookup table.
+
+    For b=2, each code is stored across 2 bit planes.
+    Extracts 2-bit codes (4 levels) with unrolled bit extraction.
+    """
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = offs < seq_len
+
+    acc = tl.zeros([BLOCK_N], dtype=tl.float32)
+
+    for byte_idx in range(bytes_per_plane):
+        b0 = tl.load(packed_ptr + offs * packed_dim + 0 * bytes_per_plane + byte_idx,
+                      mask=mask, other=0).to(tl.int32)
+        b1 = tl.load(packed_ptr + offs * packed_dim + 1 * bytes_per_plane + byte_idx,
+                      mask=mask, other=0).to(tl.int32)
+
+        base_dim = byte_idx * 8
+        for bp_inv in tl.static_range(8):
+            d_idx = base_dim + bp_inv
+            if d_idx < head_dim:
+                bp = 7 - bp_inv
+                code = ((b0 >> bp) & 1) | \
+                       (((b1 >> bp) & 1) << 1)
+                val = tl.load(table_ptr + d_idx * n_levels + code, mask=mask)
+                acc += val
+
+    norms = tl.load(norms_ptr + offs, mask=mask, other=0.0)
+    acc = acc * norms
+    tl.store(scores_ptr + offs, acc, mask=mask)
+
+
+@triton.jit
+def _tq_scores_3bit_kernel(
+    packed_ptr, norms_ptr, table_ptr, scores_ptr,
+    seq_len, head_dim,
+    bytes_per_plane: tl.constexpr,
+    packed_dim: tl.constexpr,
+    n_levels: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    """Specialized 3-bit kernel using precomputed q_rot*centroid lookup table.
+
+    For b=3, each code is stored across 3 bit planes.
+    Extracts 3-bit codes (8 levels) with unrolled bit extraction.
+    """
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = offs < seq_len
+
+    acc = tl.zeros([BLOCK_N], dtype=tl.float32)
+
+    for byte_idx in range(bytes_per_plane):
+        b0 = tl.load(packed_ptr + offs * packed_dim + 0 * bytes_per_plane + byte_idx,
+                      mask=mask, other=0).to(tl.int32)
+        b1 = tl.load(packed_ptr + offs * packed_dim + 1 * bytes_per_plane + byte_idx,
+                      mask=mask, other=0).to(tl.int32)
+        b2 = tl.load(packed_ptr + offs * packed_dim + 2 * bytes_per_plane + byte_idx,
+                      mask=mask, other=0).to(tl.int32)
+
+        base_dim = byte_idx * 8
+        for bp_inv in tl.static_range(8):
+            d_idx = base_dim + bp_inv
+            if d_idx < head_dim:
+                bp = 7 - bp_inv
+                code = ((b0 >> bp) & 1) | \
+                       (((b1 >> bp) & 1) << 1) | \
+                       (((b2 >> bp) & 1) << 2)
+                val = tl.load(table_ptr + d_idx * n_levels + code, mask=mask)
+                acc += val
+
+    norms = tl.load(norms_ptr + offs, mask=mask, other=0.0)
+    acc = acc * norms
+    tl.store(scores_ptr + offs, acc, mask=mask)
+
+
 def triton_attention_scores_v2(
     query: torch.Tensor,       # [batch, heads, head_dim]
     packed_keys: torch.Tensor, # [seq_len, packed_dim]
@@ -321,9 +406,9 @@ def triton_attention_scores_v2(
     """Optimized TurboQuant attention scores using precomputed lookup tables.
 
     Achieves cuBLAS-parity throughput on H100 at 10M vectors.
-    Currently specialized for bit_width=4.
+    Supports bit_width=2, 3, or 4.
     """
-    assert bit_width == 4, "v2 kernel currently only supports bit_width=4"
+    assert bit_width in (2, 3, 4), f"v2 kernel supports bit_width 2, 3, or 4, got {bit_width}"
     batch, heads, head_dim = query.shape
     seq_len = packed_keys.shape[0]
     n_levels = 1 << bit_width
@@ -339,13 +424,21 @@ def triton_attention_scores_v2(
 
     BLOCK_N = 512  # optimal on H100
 
+    # Select kernel based on bit width
+    if bit_width == 2:
+        kernel_fn = _tq_scores_2bit_kernel
+    elif bit_width == 3:
+        kernel_fn = _tq_scores_3bit_kernel
+    else:
+        kernel_fn = _tq_scores_v2_kernel
+
     for bh in range(batch_heads):
         # Precompute table: table[j][k] = q_rot[bh][j] * centroids[k]
-        table = (q_rot[bh].unsqueeze(1) * centroids.unsqueeze(0)).contiguous()  # [head_dim, 16]
+        table = (q_rot[bh].unsqueeze(1) * centroids.unsqueeze(0)).contiguous()  # [head_dim, n_levels]
 
         scores = all_scores[bh]
         grid = (triton.cdiv(seq_len, BLOCK_N),)
-        _tq_scores_v2_kernel[grid](
+        kernel_fn[grid](
             packed_keys, key_norms, table, scores,
             seq_len, head_dim, bytes_per_plane, packed_dim, n_levels,
             BLOCK_N=BLOCK_N,
@@ -370,11 +463,19 @@ def triton_attention_scores_single(
 
     scores = torch.empty(seq_len, device=q_rot.device, dtype=torch.float32)
 
-    if bit_width == 4:
+    if bit_width in (2, 3, 4):
+        # Use optimized precomputed-table kernels
+        if bit_width == 2:
+            kernel_fn = _tq_scores_2bit_kernel
+        elif bit_width == 3:
+            kernel_fn = _tq_scores_3bit_kernel
+        else:
+            kernel_fn = _tq_scores_v2_kernel
+
         table = (q_rot.unsqueeze(1) * centroids.unsqueeze(0)).contiguous()
         BLOCK_N = 512
         grid = (triton.cdiv(seq_len, BLOCK_N),)
-        _tq_scores_v2_kernel[grid](
+        kernel_fn[grid](
             packed_keys, key_norms, table, scores,
             seq_len, head_dim, bytes_per_plane, packed_dim, n_levels,
             BLOCK_N=BLOCK_N,
