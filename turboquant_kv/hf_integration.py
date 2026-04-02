@@ -368,19 +368,27 @@ class TurboQuantCache(_DynamicCache):  # type: ignore[misc]
         results_v: List[torch.Tensor] = []
 
         for b in range(batch_size):
-            # On first batch item we append; the store accumulates tokens.
-            # For multi-batch we need separate stores, but HF generate()
-            # typically uses batch=1.  We handle the common case efficiently
-            # and fall back to a per-batch clone for batch>1.
             if batch_size == 1:
+                # Get dequantized OLD tokens BEFORE appending new ones
+                if store.seq_len > 0:
+                    k_old = store.get_keys()    # (num_heads, old_seq, head_dim)
+                    v_old = store.get_values()
+                else:
+                    k_old = torch.zeros(num_heads, 0, head_dim, device=device, dtype=key_states.dtype)
+                    v_old = torch.zeros(num_heads, 0, head_dim, device=device, dtype=value_states.dtype)
+
+                # Append new tokens to quantized store
                 store.append(key_states[b], value_states[b])
-                k_deq = store.get_keys()   # (num_heads, total_seq, head_dim)
-                v_deq = store.get_values()
-                results_k.append(k_deq)
-                results_v.append(v_deq)
+
+                # Concatenate: old (dequantized) + new (exact, no quantization error)
+                # This prevents the current token from suffering quantization loss
+                k_new_exact = key_states[b]    # (num_heads, seq_new, head_dim)
+                v_new_exact = value_states[b]
+                k_all = torch.cat([k_old.to(k_new_exact.dtype), k_new_exact], dim=1)
+                v_all = torch.cat([v_old.to(v_new_exact.dtype), v_new_exact], dim=1)
+                results_k.append(k_all)
+                results_v.append(v_all)
             else:
-                # For batch>1 create a temporary store per item
-                # (this is the rare path)
                 tmp_store_key = f"_batch_store_{layer_idx}_{b}"
                 if not hasattr(self, tmp_store_key):
                     setattr(
@@ -394,9 +402,17 @@ class TurboQuantCache(_DynamicCache):  # type: ignore[misc]
                         ),
                     )
                 bstore: _LayerQuantStore = getattr(self, tmp_store_key)
+                if bstore.seq_len > 0:
+                    k_old = bstore.get_keys()
+                    v_old = bstore.get_values()
+                else:
+                    k_old = torch.zeros(num_heads, 0, head_dim, device=device, dtype=key_states.dtype)
+                    v_old = torch.zeros(num_heads, 0, head_dim, device=device, dtype=value_states.dtype)
                 bstore.append(key_states[b], value_states[b])
-                results_k.append(bstore.get_keys())
-                results_v.append(bstore.get_values())
+                k_all = torch.cat([k_old.to(key_states.dtype), key_states[b]], dim=1)
+                v_all = torch.cat([v_old.to(value_states.dtype), value_states[b]], dim=1)
+                results_k.append(k_all)
+                results_v.append(v_all)
 
         # Stack back to (batch, num_heads, total_seq, head_dim)
         all_keys = torch.stack(results_k, dim=0).to(key_states.dtype)
