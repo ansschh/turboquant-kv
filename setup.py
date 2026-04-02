@@ -6,6 +6,7 @@ import os
 import shutil
 from setuptools import setup
 
+
 def build_ext():
     """Return the ext_modules list and cmdclass, or empty if torch is unavailable."""
     try:
@@ -31,7 +32,7 @@ def build_ext():
     if os.path.isfile(registration):
         cpu_sources.append(registration)
 
-    for f in os.listdir(cpu_dir) if os.path.isdir(cpu_dir) else []:
+    for f in sorted(os.listdir(cpu_dir)) if os.path.isdir(cpu_dir) else []:
         if f.endswith(".cpp"):
             cpu_sources.append(os.path.join(cpu_dir, f))
 
@@ -39,7 +40,7 @@ def build_ext():
         try:
             from torch.utils.cpp_extension import CUDAExtension
 
-            for f in os.listdir(cuda_dir) if os.path.isdir(cuda_dir) else []:
+            for f in sorted(os.listdir(cuda_dir)) if os.path.isdir(cuda_dir) else []:
                 if f.endswith((".cu", ".cpp")):
                     cuda_sources.append(os.path.join(cuda_dir, f))
 
@@ -49,9 +50,14 @@ def build_ext():
                     CUDAExtension(
                         name="turboquant_kv._C",
                         sources=all_sources,
+                        define_macros=[("WITH_CUDA", None)],
                         extra_compile_args={
                             "cxx": ["-O3"],
-                            "nvcc": ["-O3", "--use_fast_math"],
+                            "nvcc": [
+                                "-O3",
+                                "--use_fast_math",
+                                "--expt-relaxed-constexpr",
+                            ],
                         },
                     )
                 )
