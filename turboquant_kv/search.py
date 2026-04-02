@@ -39,6 +39,10 @@ class TurboQuantIndex:
 
     Uses TurboQuant to compress database vectors and performs brute-force
     search over the compressed representation.
+
+    When the C++ core is available (turboquant_kv._core), the MSE-mode
+    index delegates to the fast C++ implementation for add() and search().
+    Prod mode always uses the Python reference.
     """
 
     def __init__(
@@ -55,18 +59,36 @@ class TurboQuantIndex:
         self.rotation_method = rotation
         self.seed = seed
 
-        # Pre-compute rotation and codebook
-        self._rotation = make_rotation_matrix(dim, seed=seed, method=rotation)
+        # Try to use C++ core for MSE mode
+        self._use_cpp = False
+        self._cpp_index = None
+        if mode == "mse":
+            try:
+                from turboquant_kv._core import Index as _CppIndex
+                self._cpp_index = _CppIndex(dim, bit_width, seed)
+                self._use_cpp = True
+            except ImportError:
+                pass
+
+        # Pre-compute rotation and codebook (Python fallback, and needed
+        # for prod mode regardless)
+        if not self._use_cpp or mode == "prod":
+            self._rotation = make_rotation_matrix(dim, seed=seed, method=rotation)
+        else:
+            self._rotation = None  # lazy -- only build if needed
 
         if mode == "mse":
-            self._codebook = lloyd_max_codebook(bit_width, dim)
+            if not self._use_cpp:
+                self._codebook = lloyd_max_codebook(bit_width, dim)
+            else:
+                self._codebook = None
         elif mode == "prod":
             self._codebook = lloyd_max_codebook(bit_width - 1, dim)
             self._S_matrix = _make_qjl_matrix(dim, dim, seed, torch.device("cpu"))
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
-        # Storage (initialized empty)
+        # Storage (initialized empty) -- used by Python fallback path
         self._packed_codes: Optional[torch.Tensor] = None
         self._norms: Optional[torch.Tensor] = None
         self.n_vectors: int = 0
@@ -110,6 +132,15 @@ class TurboQuantIndex:
         if vectors.dim() == 1:
             vectors = vectors.unsqueeze(0)
         assert vectors.shape[-1] == self.dim
+
+        if self._use_cpp and self.mode == "mse":
+            import numpy as np
+            vecs_np = vectors.detach().cpu().float().numpy()
+            if not vecs_np.flags['C_CONTIGUOUS']:
+                vecs_np = np.ascontiguousarray(vecs_np)
+            self._cpp_index.add(vecs_np)
+            self.n_vectors = self._cpp_index.n_vectors
+            return
 
         if self.mode == "mse":
             packed, norms = quantize_mse(
@@ -158,6 +189,14 @@ class TurboQuantIndex:
         if queries.dim() == 1:
             queries = queries.unsqueeze(0)
         assert self.n_vectors > 0, "Index is empty"
+
+        if self._use_cpp and self.mode == "mse":
+            import numpy as np
+            q_np = queries.detach().cpu().float().numpy()
+            if not q_np.flags['C_CONTIGUOUS']:
+                q_np = np.ascontiguousarray(q_np)
+            scores_np, ids_np = self._cpp_index.search(q_np, k)
+            return torch.from_numpy(scores_np), torch.from_numpy(ids_np)
 
         if self.mode == "mse":
             return self._search_mse(queries, k)
@@ -216,7 +255,14 @@ class TurboQuantIndex:
         """Save index to a binary file.
 
         Format: header + mode_byte + packed_codes + norms [+ qjl_signs + residual_norms]
+
+        If C++ backend is active (MSE mode), delegates to C++ save which uses
+        its own TQIX format. Otherwise uses the Python format.
         """
+        if self._use_cpp and self.mode == "mse":
+            self._cpp_index.save(path)
+            return
+
         mode_byte = MODE_MSE if self.mode == "mse" else MODE_PROD
         header = struct.pack(HEADER_FORMAT, self.bit_width, self.dim, self.n_vectors)
 

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel", "torch>=2.0"]
+requires = ["setuptools>=68.0", "wheel", "pybind11>=2.11"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,12 +13,13 @@ authors = [
     {name = "TurboQuant Contributors"},
 ]
 dependencies = [
-    "torch>=2.0",
     "numpy",
-    "scipy",
+    "pybind11>=2.11",
 ]
 
 [project.optional-dependencies]
+torch = ["torch>=2.0"]
+full = ["torch>=2.0", "scipy"]
 transformers = ["transformers>=4.30"]
 vllm = ["vllm>=0.3"]
 dev = ["pytest>=7.0", "pytest-benchmark"]

@@ -1,14 +1,68 @@
 """
 Build script for turboquant-kv.
-Uses CUDAExtension when nvcc is available, CPU-only fallback otherwise.
+
+Two extension modules:
+  1. turboquant_kv._core  -- pure C++ via pybind11 (no PyTorch dependency)
+  2. turboquant_kv._C     -- PyTorch C++/CUDA extension (optional, needs torch)
 """
 import os
+import platform
 import shutil
+import sys
 from setuptools import setup
 
 
-def build_ext():
-    """Return the ext_modules list and cmdclass, or empty if torch is unavailable."""
+def _openmp_flags():
+    """Return (compile_args, link_args) for OpenMP on the current platform."""
+    if sys.platform == "darwin":
+        # macOS: libomp from Homebrew/Xcode
+        return ["-Xpreprocessor", "-fopenmp"], ["-lomp"]
+    elif sys.platform == "win32":
+        return ["/openmp"], []
+    else:
+        return ["-fopenmp"], ["-fopenmp"]
+
+
+def build_core_ext():
+    """Build the pure-C++ _core extension using pybind11 (no torch needed)."""
+    try:
+        from pybind11.setup_helpers import Pybind11Extension
+    except ImportError:
+        # pybind11 not installed -- skip
+        return []
+
+    omp_compile, omp_link = _openmp_flags()
+
+    sources = [
+        os.path.join("csrc", "core", "turboquant_core.cpp"),
+        os.path.join("csrc", "core", "bindings.cpp"),
+    ]
+
+    # Only include sources that exist
+    sources = [s for s in sources if os.path.isfile(s)]
+    if not sources:
+        return []
+
+    if sys.platform == "win32":
+        extra_compile = ["/O2", "/std:c++17"] + omp_compile
+        extra_link = omp_link
+    else:
+        extra_compile = ["-O3", "-std=c++17", "-fvisibility=hidden"] + omp_compile
+        extra_link = omp_link
+
+    ext = Pybind11Extension(
+        "turboquant_kv._core",
+        sources,
+        include_dirs=[os.path.join("csrc", "core")],
+        extra_compile_args=extra_compile,
+        extra_link_args=extra_link,
+        define_macros=[("PYBIND11_DETAILED_ERROR_MESSAGES", None)],
+    )
+    return [ext]
+
+
+def build_torch_ext():
+    """Build the PyTorch C++/CUDA _C extension (optional)."""
     try:
         import torch
         from torch.utils.cpp_extension import BuildExtension, CppExtension
@@ -18,13 +72,11 @@ def build_ext():
     ext_modules = []
     cmdclass = {"build_ext": BuildExtension}
 
-    # Check for CUDA availability
     cuda_available = torch.cuda.is_available() and shutil.which("nvcc") is not None
 
     cpu_sources = []
     cuda_sources = []
 
-    # Collect source files
     cpu_dir = os.path.join("csrc", "cpu")
     cuda_dir = os.path.join("csrc", "cuda")
     registration = os.path.join("csrc", "registration.cpp")
@@ -76,9 +128,17 @@ def build_ext():
     return ext_modules, cmdclass
 
 
-ext_modules, cmdclass = build_ext()
+# Combine both extension types
+core_exts = build_core_ext()
+torch_exts, torch_cmdclass = build_torch_ext()
+
+all_ext_modules = core_exts + torch_exts
+
+# If we have torch extensions, we need BuildExtension as cmdclass.
+# For pybind11-only builds, setuptools handles it natively.
+cmdclass = torch_cmdclass if torch_cmdclass else {}
 
 setup(
-    ext_modules=ext_modules,
+    ext_modules=all_ext_modules,
     cmdclass=cmdclass,
 )
