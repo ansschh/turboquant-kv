@@ -7,7 +7,7 @@ name = "turboquant-kv"
 version = "0.1.0"
 description = "TurboQuant: quantized KV cache compression and vector search (arXiv:2504.19874)"
 readme = "README.md"
-license = "Apache-2.0"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
 authors = [
     {name = "TurboQuant Contributors"},

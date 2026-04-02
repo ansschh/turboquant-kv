@@ -127,3 +127,12 @@ TORCH_LIBRARY_IMPL(turboquant, CUDA, m) {
 }
 
 #endif  // WITH_CUDA
+
+
+// -------------------------------------------------------------------
+// Python module entry point
+// -------------------------------------------------------------------
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.doc() = "TurboQuant CUDA/CPU kernels";
+}

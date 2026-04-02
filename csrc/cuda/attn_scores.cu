@@ -59,16 +59,16 @@ __global__ void attention_scores_packed_kernel(
         s_centroids[i] = centroids[i];
     }
 
-    // Compute rotated query: q_rot[j] = sum_k query[bh][k] * rotation[j][k]
-    // rotation stored as [head_dim, head_dim] row-major
-    // We want q_rot = rotation @ query, i.e. q_rot[j] = sum_k rotation[j][k] * query[k]
+    // Compute rotated query: q_rot = query @ rotation^T
+    // i.e. q_rot[j] = sum_k query[k] * rotation^T[k,j] = sum_k query[k] * rotation[j,k]
+    // rotation stored as [head_dim, head_dim] row-major, so rotation[j,k] = rotation[j*head_dim+k]
     const float* q_ptr = query + (size_t)bh * head_dim;
 
     for (int j = tid; j < head_dim; j += block_size) {
         float val = 0.0f;
         const float* rot_row = rotation + (size_t)j * head_dim;
         for (int k = 0; k < head_dim; k++) {
-            val += rot_row[k] * q_ptr[k];
+            val += q_ptr[k] * rot_row[k];
         }
         s_qrot[j] = val;
     }
